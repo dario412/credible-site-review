@@ -16,6 +16,8 @@
     viewingCommentId: null,
     liveSyncTimer: null,
     hasSyncedOnce: false,
+    sidebarTab: 'open',
+    screenshotUrls: new Map(),
   };
 
   const page = currentPage();
@@ -105,7 +107,7 @@
         const replies = (c.replies || [])
           .map((r) => `${r.id}:${r.createdAt}`)
           .join(',');
-        return `${c.id}:${c.resolved}:${c.createdAt}:${replies}`;
+        return `${c.id}:${c.resolved}:${c.screenshot}:${c.createdAt}:${replies}`;
       })
       .join('|');
   }
@@ -227,8 +229,22 @@
 
     const sidebar = el('div', { class: 'review-sidebar open', id: 'review-sidebar' }, [
       el('div', { class: 'review-sidebar-header' }, [
-        el('h2', {}, ['All comments']),
+        el('h2', {}, ['Comments']),
         el('span', { class: 'review-sidebar-count', id: 'review-count' }, ['0']),
+      ]),
+      el('div', { class: 'review-sidebar-tabs', id: 'review-sidebar-tabs' }, [
+        el('button', {
+          type: 'button',
+          class: 'review-sidebar-tab active',
+          id: 'review-tab-open',
+          onclick: () => setSidebarTab('open'),
+        }, ['Open']),
+        el('button', {
+          type: 'button',
+          class: 'review-sidebar-tab',
+          id: 'review-tab-resolved',
+          onclick: () => setSidebarTab('resolved'),
+        }, ['Resolved']),
       ]),
       el('div', { class: 'review-sidebar-list', id: 'review-sidebar-list' }),
     ]);
@@ -404,6 +420,16 @@
 
     const comment = state.comments.find((c) => c.id === n.commentId);
     if (comment) {
+      if (comment.resolved) {
+        if (samePage(comment.page, page)) {
+          state.sidebarTab = 'resolved';
+          setSidebarTab('resolved');
+          openViewBubble(comment, false, true);
+        } else {
+          window.location.href = `${comment.page}?comment=${comment.id}&resolved=1`;
+        }
+        return;
+      }
       if (samePage(comment.page, page)) {
         scrollToComment(comment);
       } else {
@@ -412,6 +438,226 @@
     } else {
       window.location.href = `${n.page}?comment=${n.commentId}`;
     }
+  }
+
+  function setSidebarTab(tab) {
+    state.sidebarTab = tab;
+    document.getElementById('review-tab-open')?.classList.toggle('active', tab === 'open');
+    document.getElementById('review-tab-resolved')?.classList.toggle('active', tab === 'resolved');
+    renderSidebar();
+  }
+
+  function openComments() {
+    return state.comments.filter((c) => !c.resolved);
+  }
+
+  function resolvedComments() {
+    return state.comments.filter((c) => c.resolved);
+  }
+
+  function sidebarComments() {
+    return state.sidebarTab === 'resolved' ? resolvedComments() : openComments();
+  }
+
+  let html2canvasPromise;
+
+  function getHtml2Canvas() {
+    if (window.html2canvas) return Promise.resolve(window.html2canvas);
+    if (!html2canvasPromise) {
+      html2canvasPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+        script.onload = () => resolve(window.html2canvas);
+        script.onerror = () => reject(new Error('Failed to load screenshot library'));
+        document.head.appendChild(script);
+      });
+    }
+    return html2canvasPromise;
+  }
+
+  async function captureViewportScreenshot() {
+    const html2canvas = await getHtml2Canvas();
+    const reviewNodes = document.querySelectorAll(
+      '.review-toolbar, .review-sidebar, .review-pins-layer, .review-bubble, .review-click-shield, .review-live-toasts, .review-mention-dropdown'
+    );
+
+    reviewNodes.forEach((node) => {
+      node.dataset.reviewPrevVisibility = node.style.visibility;
+      node.style.visibility = 'hidden';
+    });
+
+    try {
+      const canvas = await html2canvas(document.documentElement, {
+        x: window.scrollX,
+        y: window.scrollY,
+        width: window.innerWidth,
+        height: window.innerHeight,
+        windowWidth: document.documentElement.clientWidth,
+        windowHeight: window.innerHeight,
+        scrollX: 0,
+        scrollY: 0,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        scale: Math.min(window.devicePixelRatio || 1, 2),
+        ignoreElements: (node) => {
+          if (!node?.classList) return false;
+          return [
+            'review-toolbar',
+            'review-sidebar',
+            'review-pins-layer',
+            'review-bubble',
+            'review-click-shield',
+            'review-live-toasts',
+            'review-mention-dropdown',
+          ].some((cls) => node.classList.contains(cls));
+        },
+      });
+
+      return new Promise((resolve) => {
+        canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.82);
+      });
+    } finally {
+      reviewNodes.forEach((node) => {
+        node.style.visibility = node.dataset.reviewPrevVisibility || '';
+        delete node.dataset.reviewPrevVisibility;
+      });
+    }
+  }
+
+  async function uploadScreenshot(commentId, blob) {
+    if (!blob) return;
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    await fetch('/api/screenshots', {
+      method: 'POST',
+      headers: ReviewAuth.headers(),
+      body: JSON.stringify({ commentId, image: base64 }),
+    });
+  }
+
+  async function loadScreenshotUrl(commentId) {
+    if (state.screenshotUrls.has(commentId)) return state.screenshotUrls.get(commentId);
+
+    try {
+      const res = await fetch(`/api/screenshots?commentId=${encodeURIComponent(commentId)}`, {
+        headers: ReviewAuth.headers(),
+      });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      state.screenshotUrls.set(commentId, url);
+      return url;
+    } catch {
+      return null;
+    }
+  }
+
+  function appendFormattedCommentText(parent, text, tags, dark = false) {
+    if (!text) return;
+
+    if (!tags?.length) {
+      parent.appendChild(document.createTextNode(text));
+      return;
+    }
+
+    const sorted = [...tags].sort((a, b) => b.name.length - a.name.length);
+    let segments = [{ type: 'text', value: text }];
+
+    for (const tag of sorted) {
+      const escaped = tag.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`@${escaped}`, 'gi');
+      const next = [];
+
+      for (const seg of segments) {
+        if (seg.type !== 'text') {
+          next.push(seg);
+          continue;
+        }
+
+        let last = 0;
+        let match;
+        const str = seg.value;
+        re.lastIndex = 0;
+        while ((match = re.exec(str)) !== null) {
+          if (match.index > last) {
+            next.push({ type: 'text', value: str.slice(last, match.index) });
+          }
+          next.push({ type: 'mention', value: match[0] });
+          last = match.index + match[0].length;
+        }
+        if (last < str.length) next.push({ type: 'text', value: str.slice(last) });
+      }
+
+      segments = next;
+    }
+
+    for (const seg of segments) {
+      if (seg.type === 'mention') {
+        parent.appendChild(el('span', {
+          class: `review-mention-highlight${dark ? ' review-mention-highlight-dark' : ''}`,
+        }, [seg.value]));
+      } else {
+        parent.appendChild(document.createTextNode(seg.value));
+      }
+    }
+  }
+
+  function buildCommentTextEl(text, tags, className = 'review-bubble-text', dark = false) {
+    const wrap = el('div', { class: className });
+    appendFormattedCommentText(wrap, text, tags, dark);
+    return wrap;
+  }
+
+  function attachScreenshotBlock(container, comment) {
+    if (!comment.screenshot) return;
+
+    const wrap = el('div', { class: 'review-screenshot-wrap' });
+    wrap.appendChild(el('div', { class: 'review-screenshot-label' }, ['Snapshot when commented']));
+    const loading = el('div', { class: 'review-screenshot-loading' }, ['Loading snapshot…']);
+    const img = el('img', {
+      class: 'review-screenshot-img',
+      alt: 'Page snapshot at time of comment',
+    });
+
+    wrap.appendChild(loading);
+    wrap.appendChild(img);
+    container.appendChild(wrap);
+
+    loadScreenshotUrl(comment.id).then((url) => {
+      if (!url) {
+        wrap.remove();
+        return;
+      }
+      img.src = url;
+      img.onload = () => {
+        loading.remove();
+        img.classList.add('loaded');
+      };
+      img.onclick = (e) => {
+        e.stopPropagation();
+        openScreenshotLightbox(url);
+      };
+    });
+  }
+
+  function openScreenshotLightbox(url) {
+    const existing = document.getElementById('review-screenshot-lightbox');
+    if (existing) existing.remove();
+
+    const box = el('div', {
+      class: 'review-screenshot-lightbox',
+      id: 'review-screenshot-lightbox',
+      onclick: () => box.remove(),
+    }, [
+      el('img', { src: url, alt: 'Full page snapshot' }),
+    ]);
+    document.body.appendChild(box);
   }
 
   function toggleSidebar() {
@@ -561,6 +807,11 @@
     const tags = parseTags(text);
 
     try {
+      if (btn) btn.textContent = 'Capturing…';
+      const screenshotBlob = await captureViewportScreenshot().catch(() => null);
+
+      if (btn) btn.textContent = 'Posting…';
+
       const res = await fetch('/api/comments', {
         method: 'POST',
         headers: ReviewAuth.headers(),
@@ -577,6 +828,12 @@
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to post comment');
+      }
+
+      const data = await res.json();
+      if (screenshotBlob && data.comment?.id) {
+        if (btn) btn.textContent = 'Saving snapshot…';
+        await uploadScreenshot(data.comment.id, screenshotBlob).catch(() => {});
       }
 
       state.pendingPin = null;
@@ -760,7 +1017,7 @@
   }
 
   function pageComments() {
-    return state.comments.filter((c) => samePage(c.page, page));
+    return state.comments.filter((c) => samePage(c.page, page) && !c.resolved);
   }
 
   function renderPins() {
@@ -776,7 +1033,7 @@
       const top = (c.y / 100) * docH;
 
       const pin = el('div', {
-        class: `review-pin${c.resolved ? ' resolved' : ''}${state.highlightId === c.id ? ' highlight' : ''}`,
+        class: `review-pin${state.highlightId === c.id ? ' highlight' : ''}`,
         style: `left:${left}px;top:${top}px`,
         onclick: (e) => {
           e.stopPropagation();
@@ -796,7 +1053,7 @@
     });
   }
 
-  function openViewBubble(comment, showReplyForm = false) {
+  function openViewBubble(comment, showReplyForm = false, resolvedPanel = false) {
     closeBubble();
     loadUsers();
 
@@ -805,7 +1062,7 @@
     const replies = fresh.replies || [];
 
     const bubble = el('div', {
-      class: 'review-bubble review-bubble-thread',
+      class: `review-bubble review-bubble-thread${resolvedPanel ? ' review-bubble-resolved' : ''}`,
       id: 'review-active-bubble',
     });
 
@@ -814,17 +1071,15 @@
         el('div', { class: 'review-avatar review-avatar-sm' }, [initials(fresh.authorName)]),
         el('span', { class: 'review-bubble-author' }, [fresh.authorName]),
       ]),
-      el('span', { class: 'review-bubble-time' }, [formatTime(fresh.createdAt)]),
+      el('span', { class: 'review-bubble-time' }, [
+        resolvedPanel ? 'Resolved · ' : '',
+        formatTime(fresh.createdAt),
+      ]),
     ]));
 
-    const body = el('div', { class: 'review-bubble-body' }, [
-      el('div', { class: 'review-bubble-text' }, [fresh.text]),
-    ]);
-    if (fresh.tags?.length) {
-      body.appendChild(el('div', { class: 'review-bubble-tags' }, fresh.tags.map((t) =>
-        el('span', { class: 'review-tag' }, [`@${t.name}`])
-      )));
-    }
+    const body = el('div', { class: 'review-bubble-body' });
+    body.appendChild(buildCommentTextEl(fresh.text, fresh.tags));
+    attachScreenshotBlock(body, fresh);
     bubble.appendChild(body);
 
     if (replies.length) {
@@ -832,20 +1087,16 @@
         el('div', { class: 'review-replies-header' }, [
           `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`,
         ]),
-        el('div', { class: 'review-replies-list' }, replies.map((r) =>
-          el('div', { class: 'review-reply' }, [
+        el('div', { class: 'review-replies-list' }, replies.map((r) => {
+          const replyEl = el('div', { class: 'review-reply' }, [
             el('div', { class: 'review-reply-header' }, [
               el('span', { class: 'review-reply-author' }, [r.authorName]),
               el('span', { class: 'review-reply-time' }, [formatTime(r.createdAt)]),
             ]),
-            el('div', { class: 'review-reply-text' }, [r.text]),
-            r.tags?.length
-              ? el('div', { class: 'review-bubble-tags' }, r.tags.map((t) =>
-                  el('span', { class: 'review-tag' }, [`@${t.name}`])
-                ))
-              : null,
-          ].filter(Boolean))
-        )),
+          ]);
+          replyEl.appendChild(buildCommentTextEl(r.text, r.tags, 'review-reply-text'));
+          return replyEl;
+        })),
       ]);
       bubble.appendChild(repliesSection);
     }
@@ -905,7 +1156,13 @@
     bubble.addEventListener('click', (e) => e.stopPropagation());
     bubble.addEventListener('mousedown', (e) => e.stopPropagation());
     document.body.appendChild(bubble);
-    positionBubbleNearComment(bubble, fresh);
+
+    if (resolvedPanel) {
+      positionBubbleResolved(bubble);
+    } else {
+      positionBubbleNearComment(bubble, fresh);
+    }
+
     setupMentions(replyTextarea, replyTagPreview);
     replyTextarea.addEventListener('input', () => updateTagPreview(replyTextarea, replyTagPreview));
     if (showReplyForm || replies.length) replyTextarea.focus();
@@ -957,6 +1214,7 @@
   }
 
   async function toggleResolved(comment) {
+    const wasResolved = comment.resolved;
     await fetch('/api/comments', {
       method: 'PATCH',
       headers: ReviewAuth.headers(),
@@ -964,6 +1222,13 @@
     });
     closeBubble();
     await loadComments();
+    if (!wasResolved) {
+      state.sidebarTab = 'resolved';
+      setSidebarTab('resolved');
+    } else {
+      state.sidebarTab = 'open';
+      setSidebarTab('open');
+    }
     renderPins();
     renderSidebar();
   }
@@ -985,22 +1250,33 @@
     const count = document.getElementById('review-count');
     if (!list) return;
 
-    count.textContent = String(state.comments.length);
+    const items = sidebarComments();
+    count.textContent = String(items.length);
 
-    if (!state.comments.length) {
-      list.innerHTML = '<div class="review-sidebar-empty">No comments yet.<br>Click <strong>Add comment</strong> to leave feedback.</div>';
+    const emptyMessage = state.sidebarTab === 'resolved'
+      ? 'No resolved comments yet.<br>Resolve a comment to move it here.'
+      : 'No open comments.<br>Click <strong>Add comment</strong> to leave feedback.';
+
+    if (!items.length) {
+      list.innerHTML = `<div class="review-sidebar-empty">${emptyMessage}</div>`;
       return;
     }
 
     list.innerHTML = '';
-    state.comments.forEach((c) => {
+    items.forEach((c) => {
       const replyCount = c.replies?.length || 0;
+      const textEl = el('div', { class: 'review-sidebar-item-text' });
+      appendFormattedCommentText(textEl, c.text, c.tags, true);
+
       const item = el('div', {
-        class: `review-sidebar-item${c.resolved ? ' resolved' : ''}${state.highlightId === c.id ? ' active' : ''}`,
+        class: `review-sidebar-item${state.highlightId === c.id ? ' active' : ''}`,
         onclick: () => navigateToComment(c),
       }, [
         el('div', { class: 'review-sidebar-item-page' }, [formatPage(c.page)]),
-        el('div', { class: 'review-sidebar-item-text' }, [c.text]),
+        textEl,
+        c.screenshot
+          ? el('div', { class: 'review-sidebar-screenshot-badge' }, ['📷 Snapshot saved'])
+          : null,
         replyCount
           ? el('div', { class: 'review-sidebar-replies' }, [
               `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`,
@@ -1016,9 +1292,16 @@
   }
 
   function navigateToComment(comment) {
-    const target = comment.page + `?comment=${comment.id}`;
-    const current = page + window.location.search;
+    if (comment.resolved) {
+      if (!samePage(comment.page, page)) {
+        window.location.href = `${comment.page}?comment=${comment.id}&resolved=1`;
+        return;
+      }
+      openViewBubble(comment, false, true);
+      return;
+    }
 
+    const target = comment.page + `?comment=${comment.id}`;
     if (samePage(comment.page, page)) {
       scrollToComment(comment);
     } else {
@@ -1073,9 +1356,16 @@
     if (!id) return;
 
     const comment = state.comments.find((c) => c.id === id);
-    if (comment) {
-      setTimeout(() => scrollToComment(comment), 300);
+    if (!comment) return;
+
+    if (comment.resolved || params.get('resolved') === '1') {
+      state.sidebarTab = 'resolved';
+      setSidebarTab('resolved');
+      setTimeout(() => openViewBubble(comment, false, true), 300);
+      return;
     }
+
+    setTimeout(() => scrollToComment(comment), 300);
   }
 
   function closeBubble() {
@@ -1098,6 +1388,15 @@
     bubble.style.position = 'fixed';
     bubble.style.left = `${Math.max(pad, left)}px`;
     bubble.style.top = `${Math.max(pad + 48, top)}px`;
+  }
+
+  function positionBubbleResolved(bubble) {
+    const pad = 16;
+    const sidebarW = state.sidebarOpen ? 340 : 0;
+    bubble.style.position = 'fixed';
+    bubble.style.left = `${sidebarW + pad}px`;
+    bubble.style.top = `${64 + pad}px`;
+    bubble.style.maxHeight = `calc(100vh - ${64 + pad * 2}px)`;
   }
 
   function formatPage(p) {

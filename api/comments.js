@@ -90,6 +90,7 @@ export async function POST(request) {
     })),
     replies: [],
     resolved: false,
+    screenshot: false,
     createdAt: new Date().toISOString(),
   };
 
@@ -143,6 +144,12 @@ export async function DELETE(request) {
   }
 
   store.comments.splice(idx, 1);
+  try {
+    const { deleteScreenshot } = await import('./lib/screenshots.js');
+    await deleteScreenshot(id);
+  } catch {
+    /* ignore */
+  }
   await saveStore(store);
   return cors(JSON.stringify({ ok: true }), 200);
 }

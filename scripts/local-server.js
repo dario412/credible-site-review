@@ -39,6 +39,10 @@ const API_ROUTES = {
   'POST /api/presence': () => import('../api/presence.js'),
   'OPTIONS /api/presence': () => import('../api/presence.js'),
   'POST /api/admin/cleanup': () => import('../api/admin/cleanup.js'),
+  'GET /api/screenshots': () => import('../api/screenshots.js'),
+  'POST /api/screenshots': () => import('../api/screenshots.js'),
+  'DELETE /api/screenshots': () => import('../api/screenshots.js'),
+  'OPTIONS /api/screenshots': () => import('../api/screenshots.js'),
 };
 
 async function handleApi(req, res) {
