@@ -8,7 +8,7 @@ function isVercel() {
 }
 
 function blobOpts() {
-  const opts = { access: 'private' };
+  const opts = { access: 'private', useCache: false };
   if (process.env.BLOB_STORE_ID) opts.storeId = process.env.BLOB_STORE_ID;
   if (process.env.BLOB_READ_WRITE_TOKEN) opts.token = process.env.BLOB_READ_WRITE_TOKEN;
   return opts;
@@ -24,6 +24,13 @@ function requireBlobStorage() {
       'Blob storage is not connected. In Vercel: Storage → Blob → Connect to project, then redeploy.'
     );
   }
+}
+
+function normalizeStore(raw) {
+  return {
+    users: Array.isArray(raw?.users) ? raw.users : [],
+    comments: Array.isArray(raw?.comments) ? raw.comments : [],
+  };
 }
 
 async function streamToText(stream) {
@@ -58,7 +65,7 @@ async function readBlob() {
     }
     const text = await streamToText(result.stream);
     if (!text) return structuredClone(EMPTY);
-    return JSON.parse(text);
+    return normalizeStore(JSON.parse(text));
   } catch (err) {
     console.error('[store] readBlob failed:', err.message);
     return structuredClone(EMPTY);
@@ -68,7 +75,8 @@ async function readBlob() {
 async function writeBlob(data) {
   requireBlobStorage();
   const opts = blobOpts();
-  await put(BLOB_PATH, JSON.stringify(data), {
+  const payload = normalizeStore(data);
+  await put(BLOB_PATH, JSON.stringify(payload), {
     ...opts,
     contentType: 'application/json',
     addRandomSuffix: false,
@@ -93,24 +101,25 @@ export async function getStore() {
       await writeFile(localPath, JSON.stringify(EMPTY, null, 2));
       return structuredClone(EMPTY);
     }
-    return JSON.parse(await readFile(localPath, 'utf-8'));
+    return normalizeStore(JSON.parse(await readFile(localPath, 'utf-8')));
   } catch {
     return structuredClone(EMPTY);
   }
 }
 
 export async function saveStore(data) {
+  const payload = normalizeStore(data);
   if (isVercel() || hasBlobStorage()) {
-    await writeBlob(data);
+    await writeBlob(payload);
   } else {
     const { writeFile, mkdir } = await import('fs/promises');
     const { join, dirname } = await import('path');
     const { fileURLToPath } = await import('url');
     const localPath = join(dirname(fileURLToPath(import.meta.url)), '../../data/store.json');
     await mkdir(dirname(localPath), { recursive: true });
-    await writeFile(localPath, JSON.stringify(data, null, 2));
+    await writeFile(localPath, JSON.stringify(payload, null, 2));
   }
-  return data;
+  return payload;
 }
 
 export function newId() {
