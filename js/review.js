@@ -67,7 +67,7 @@
           id: 'review-toggle-sidebar',
           onclick: toggleSidebar,
         }, ['☰ Comments']),
-        el('span', { class: 'review-logo' }, ['Review', el('span', {}, ['.'])]),
+        el('span', { class: 'review-logo' }, ['Codelii', el('span', {}, [' Review'])]),
         el('div', { class: 'review-online-wrap', id: 'review-online-wrap' }),
       ]),
       el('div', { class: 'review-toolbar-right' }, [
@@ -324,25 +324,45 @@
     const y = (docY / document.documentElement.scrollHeight) * 100;
 
     state.pendingPin = { x, y, scrollY: window.scrollY };
-    openNewCommentBubble(e.clientX, e.clientY);
+    openNewCommentBubble(e.clientX, e.clientY).catch(() => {});
   }
 
-  function openNewCommentBubble(clientX, clientY) {
+  function getMentionableUsers() {
+    const me = ReviewAuth.getUser()?.email?.toLowerCase();
+    return state.users.filter((u) => u.email.toLowerCase() !== me);
+  }
+
+  async function openNewCommentBubble(clientX, clientY) {
+    await loadUsers();
     const pin = state.pendingPin;
     closeBubble();
     state.pendingPin = pin;
 
-    const bubble = el('div', { class: 'review-bubble', id: 'review-active-bubble' });
+    const user = ReviewAuth.getUser();
+    const bubble = el('div', { class: 'review-bubble review-bubble-new', id: 'review-active-bubble' });
+
+    bubble.appendChild(el('div', { class: 'review-bubble-header review-bubble-header-brand' }, [
+      el('div', { class: 'review-bubble-header-left' }, [
+        el('div', { class: 'review-avatar review-avatar-sm' }, [initials(user.name)]),
+        el('span', { class: 'review-bubble-author' }, ['New comment']),
+      ]),
+      el('span', { class: 'review-bubble-hint' }, ['@ to tag']),
+    ]));
+
     const textarea = el('textarea', {
-      placeholder: 'Leave your feedback… Use @name to tag someone',
+      class: 'review-textarea',
+      placeholder: 'What should change here? Type @ to tag a teammate…',
     });
+
+    const tagPreview = el('div', { class: 'review-tag-preview', id: 'review-tag-preview' });
 
     const form = el('div', { class: 'review-bubble-form' }, [
       textarea,
+      tagPreview,
       el('div', { class: 'review-bubble-actions' }, [
         el('button', {
           type: 'button',
-          class: 'review-btn',
+          class: 'review-btn review-btn-ghost',
           onclick: (e) => {
             e.stopPropagation();
             state.pendingPin = null;
@@ -367,9 +387,26 @@
     bubble.addEventListener('mousedown', (e) => e.stopPropagation());
     document.body.appendChild(bubble);
     positionBubble(bubble, clientX, clientY);
-    setupMentions(textarea, bubble);
+    setupMentions(textarea, tagPreview);
+    textarea.addEventListener('input', () => updateTagPreview(textarea, tagPreview));
     textarea.focus();
     state.activeBubble = bubble;
+  }
+
+  function updateTagPreview(textarea, previewEl) {
+    if (!previewEl) return;
+    const tags = parseTags(textarea.value);
+    if (!tags.length) {
+      previewEl.innerHTML = '';
+      previewEl.style.display = 'none';
+      return;
+    }
+    previewEl.style.display = 'flex';
+    previewEl.innerHTML = '';
+    previewEl.appendChild(el('span', { class: 'review-tag-preview-label' }, ['Will notify:']));
+    tags.forEach((t) => {
+      previewEl.appendChild(el('span', { class: 'review-tag' }, [`@${t.name}`]));
+    });
   }
 
   async function submitComment(textarea) {
@@ -430,39 +467,66 @@
 
   function parseTags(text) {
     const tags = [];
+    const used = new Set();
     const sorted = [...state.users].sort((a, b) => b.name.length - a.name.length);
+
     for (const user of sorted) {
       const escaped = user.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`@${escaped}(?:\\s|$|[.,!?])`, 'i');
-      if (pattern.test(text) && !tags.find((t) => t.email === user.email)) {
+      const pattern = new RegExp(`@${escaped}(?=\\s|,|\\.|!|\\?|$)`, 'i');
+      if (pattern.test(text) && !used.has(user.email)) {
+        used.add(user.email);
         tags.push({ email: user.email, name: user.name });
       }
     }
+
+    for (const user of sorted) {
+      const local = user.email.split('@')[0];
+      const escaped = local.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`@${escaped}(?=\\s|,|\\.|!|\\?|$|@)`, 'i');
+      if (pattern.test(text) && !used.has(user.email)) {
+        used.add(user.email);
+        tags.push({ email: user.email, name: user.name });
+      }
+    }
+
     return tags;
   }
 
-  function setupMentions(textarea, bubble) {
+  function setupMentions(textarea, tagPreview) {
     let dropdown = null;
     let selectedIdx = 0;
+
+    function getMatches(query) {
+      const q = query.toLowerCase();
+      return getMentionableUsers()
+        .filter(
+          (u) =>
+            !q ||
+            u.name.toLowerCase().includes(q) ||
+            u.email.toLowerCase().includes(q) ||
+            u.name.toLowerCase().startsWith(q)
+        )
+        .slice(0, 6);
+    }
 
     textarea.addEventListener('input', () => {
       const val = textarea.value;
       const pos = textarea.selectionStart;
       const before = val.slice(0, pos);
-      const atMatch = before.match(/@([^\s@]*)$/);
+      const atIdx = before.lastIndexOf('@');
 
-      if (!atMatch) {
+      if (atIdx === -1) {
         removeDropdown();
         return;
       }
 
-      const query = atMatch[1].toLowerCase();
-      const matches = state.users.filter(
-        (u) =>
-          u.name.toLowerCase().includes(query) ||
-          u.email.toLowerCase().includes(query)
-      ).slice(0, 6);
+      const query = before.slice(atIdx + 1);
+      if (query.includes('\n')) {
+        removeDropdown();
+        return;
+      }
 
+      const matches = getMatches(query);
       if (!matches.length) {
         removeDropdown();
         return;
@@ -470,37 +534,50 @@
 
       removeDropdown();
       selectedIdx = 0;
-      dropdown = el('div', { class: 'review-mention-dropdown' });
+      dropdown = el('div', { class: 'review-mention-dropdown', id: 'review-mention-dropdown' });
+
       matches.forEach((u, i) => {
-        const item = el('div', {
+        dropdown.appendChild(el('div', {
           class: `review-mention-item${i === 0 ? ' selected' : ''}`,
-          onclick: () => insertMention(u),
+          onclick: (e) => {
+            e.stopPropagation();
+            insertMention(u, atIdx);
+          },
         }, [
-          el('strong', {}, [u.name]),
-          el('span', {}, [u.email]),
-        ]);
-        dropdown.appendChild(item);
+          el('div', { class: 'review-mention-avatar' }, [initials(u.name)]),
+          el('div', {}, [
+            el('strong', {}, [u.name]),
+            el('span', {}, [u.email]),
+          ]),
+        ]));
       });
 
       document.body.appendChild(dropdown);
       const rect = textarea.getBoundingClientRect();
-      dropdown.style.left = `${rect.left}px`;
-      dropdown.style.top = `${rect.bottom + 4}px`;
+      dropdown.style.left = `${Math.max(8, rect.left)}px`;
+      dropdown.style.top = `${rect.bottom + 6}px`;
 
-      function insertMention(user) {
-        const start = before.lastIndexOf('@');
+      function insertMention(user, startAt) {
         const after = val.slice(pos);
-        textarea.value = `${val.slice(0, start)}@${user.name} ${after}`;
+        textarea.value = `${val.slice(0, startAt)}@${user.name} ${after}`;
+        const newPos = startAt + user.name.length + 2;
+        textarea.setSelectionRange(newPos, newPos);
         textarea.focus();
         removeDropdown();
+        updateTagPreview(textarea, tagPreview);
       }
 
-      dropdown._insert = insertMention;
+      dropdown._insert = (user) => insertMention(user, atIdx);
     });
 
     textarea.addEventListener('keydown', (e) => {
       if (!dropdown) return;
       const items = dropdown.querySelectorAll('.review-mention-item');
+      const before = textarea.value.slice(0, textarea.selectionStart);
+      const atIdx = before.lastIndexOf('@');
+      const query = atIdx >= 0 ? before.slice(atIdx + 1) : '';
+      const matches = getMatches(query);
+
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
@@ -509,22 +586,22 @@
         e.preventDefault();
         selectedIdx = Math.max(selectedIdx - 1, 0);
         items.forEach((it, i) => it.classList.toggle('selected', i === selectedIdx));
-      } else if (e.key === 'Enter' || e.key === 'Tab') {
+      } else if (e.key === 'Enter' && dropdown) {
         e.preventDefault();
-        const u = state.users.filter(
-          (u) =>
-            u.name.toLowerCase().includes((textarea.value.match(/@([^\s@]*)$/) || ['', ''])[1].toLowerCase()) ||
-            u.email.toLowerCase().includes((textarea.value.match(/@([^\s@]*)$/) || ['', ''])[1].toLowerCase())
-        )[selectedIdx];
+        const u = matches[selectedIdx];
         if (u && dropdown._insert) dropdown._insert(u);
+      } else if (e.key === 'Tab' && dropdown) {
+        e.preventDefault();
+        const u = matches[selectedIdx];
+        if (u && dropdown._insert) dropdown._insert(u);
+      } else if (e.key === 'Escape') {
+        removeDropdown();
       }
     });
 
     function removeDropdown() {
-      if (dropdown) {
-        dropdown.remove();
-        dropdown = null;
-      }
+      document.querySelectorAll('.review-mention-dropdown').forEach((d) => d.remove());
+      dropdown = null;
     }
   }
 
@@ -589,6 +666,7 @@
 
   function openViewBubble(comment, clientX, clientY, showReplyForm = false) {
     closeBubble();
+    loadUsers();
 
     const fresh = state.comments.find((c) => c.id === comment.id) || comment;
     const replies = fresh.replies || [];
@@ -598,8 +676,11 @@
       id: 'review-active-bubble',
     });
 
-    bubble.appendChild(el('div', { class: 'review-bubble-header' }, [
-      el('span', { class: 'review-bubble-author' }, [fresh.authorName]),
+    bubble.appendChild(el('div', { class: 'review-bubble-header review-bubble-header-brand' }, [
+      el('div', { class: 'review-bubble-header-left' }, [
+        el('div', { class: 'review-avatar review-avatar-sm' }, [initials(fresh.authorName)]),
+        el('span', { class: 'review-bubble-author' }, [fresh.authorName]),
+      ]),
       el('span', { class: 'review-bubble-time' }, [formatTime(fresh.createdAt)]),
     ]));
 
@@ -637,11 +718,14 @@
     }
 
     const replyFormWrap = el('div', { class: 'review-reply-form', id: 'review-reply-form-wrap' });
+    const replyTagPreview = el('div', { class: 'review-tag-preview', id: 'review-reply-tag-preview' });
     const replyTextarea = el('textarea', {
-      placeholder: 'Write a reply… Use @name to tag someone',
+      class: 'review-textarea',
+      placeholder: 'Write a reply… Type @ to tag someone',
     });
 
     replyFormWrap.appendChild(replyTextarea);
+    replyFormWrap.appendChild(replyTagPreview);
     replyFormWrap.appendChild(el('div', { class: 'review-bubble-actions' }, [
       el('button', {
         type: 'button',
@@ -689,7 +773,8 @@
     bubble.addEventListener('mousedown', (e) => e.stopPropagation());
     document.body.appendChild(bubble);
     positionBubble(bubble, clientX, clientY);
-    setupMentions(replyTextarea, bubble);
+    setupMentions(replyTextarea, replyTagPreview);
+    replyTextarea.addEventListener('input', () => updateTagPreview(replyTextarea, replyTagPreview));
     if (showReplyForm || replies.length) replyTextarea.focus();
     state.activeBubble = bubble;
   }
