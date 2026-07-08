@@ -7,16 +7,23 @@ function isVercel() {
   return Boolean(process.env.VERCEL);
 }
 
-function requireBlobToken() {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+function hasBlobStorage() {
+  return Boolean(
+    process.env.BLOB_READ_WRITE_TOKEN ||
+    process.env.BLOB_STORE_ID
+  );
+}
+
+function requireBlobStorage() {
+  if (!hasBlobStorage()) {
     throw new Error(
-      'BLOB_READ_WRITE_TOKEN is missing. In Vercel: Storage → Blob → Connect to project.'
+      'Blob storage is not connected. In Vercel: Storage → Blob → Connect to project, then redeploy.'
     );
   }
 }
 
 async function readBlob() {
-  requireBlobToken();
+  requireBlobStorage();
   try {
     const meta = await head(BLOB_PATH);
     const res = await fetch(meta.url);
@@ -28,7 +35,7 @@ async function readBlob() {
 }
 
 async function writeBlob(data) {
-  requireBlobToken();
+  requireBlobStorage();
   await put(BLOB_PATH, JSON.stringify(data), {
     access: 'public',
     contentType: 'application/json',
@@ -41,11 +48,10 @@ export async function getStore() {
     return (await readBlob()) || structuredClone(EMPTY);
   }
 
-  if (process.env.BLOB_READ_WRITE_TOKEN) {
+  if (hasBlobStorage()) {
     return (await readBlob()) || structuredClone(EMPTY);
   }
 
-  // Local fallback only — not used on Vercel
   const { readFile, writeFile, mkdir } = await import('fs/promises');
   const { existsSync } = await import('fs');
   const { join, dirname } = await import('path');
@@ -65,7 +71,7 @@ export async function getStore() {
 }
 
 export async function saveStore(data) {
-  if (isVercel() || process.env.BLOB_READ_WRITE_TOKEN) {
+  if (isVercel() || hasBlobStorage()) {
     await writeBlob(data);
   } else {
     const { writeFile, mkdir } = await import('fs/promises');
