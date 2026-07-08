@@ -26,19 +26,40 @@ function requireBlobStorage() {
   }
 }
 
+async function streamToText(stream) {
+  const reader = stream.getReader();
+  const parts = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const length = parts.reduce((n, p) => n + p.length, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.length;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 async function readBlob() {
   requireBlobStorage();
   const opts = blobOpts();
   try {
     const result = await get(BLOB_PATH, opts);
-    if (!result) return structuredClone(EMPTY);
-    const text = await result.text();
+    if (!result || result.statusCode !== 200 || !result.stream) {
+      return structuredClone(EMPTY);
+    }
+    const text = await streamToText(result.stream);
     if (!text) return structuredClone(EMPTY);
     return JSON.parse(text);
   } catch (err) {
-    if (err?.statusCode === 404 || err?.message?.includes('404')) {
-      return structuredClone(EMPTY);
-    }
     console.error('[store] readBlob failed:', err.message);
     return structuredClone(EMPTY);
   }
