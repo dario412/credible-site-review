@@ -711,6 +711,77 @@ body.review-comment-mode .review-bubble * { cursor: auto !important; }
 
 .review-pin.highlight .review-pin-dot { animation: review-pulse 1s ease 2; }
 
+/* Live update toasts */
+.review-live-toasts {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: 100030;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.review-live-toast {
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--review-radius-lg);
+  background: var(--brand-bg);
+  color: #fff;
+  box-shadow: var(--review-shadow);
+  border: 1px solid rgba(184, 255, 84, 0.25);
+  cursor: pointer;
+  pointer-events: all;
+  opacity: 0;
+  transform: translateX(16px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.review-live-toast.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.review-live-toast:hover {
+  border-color: var(--brand-accent);
+  box-shadow: 0 12px 40px rgba(0, 43, 43, 0.35);
+}
+
+.review-live-toast-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--brand-accent);
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+.review-live-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.review-live-toast-body strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.review-live-toast-body span {
+  font-size: 12px;
+  color: var(--brand-muted);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 768px) {
   :root { --review-sidebar-w: 300px; }
   body.review-sidebar-open { padding-left: 0; }

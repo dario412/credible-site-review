@@ -13,6 +13,9 @@
     activeBubble: null,
     pendingPin: null,
     highlightId: null,
+    viewingCommentId: null,
+    liveSyncTimer: null,
+    hasSyncedOnce: false,
   };
 
   const page = currentPage();
@@ -41,20 +44,149 @@
     renderOnlineUsers();
     renderNotificationBadge();
     handleDeepLink();
+    startLiveSync();
 
-    setInterval(async () => {
-      await loadComments();
-      await loadUsers();
-      await loadNotifications();
-      await loadPresence();
-      renderPins();
-      renderSidebar();
-      renderOnlineUsers();
-      renderNotificationBadge();
-      if (state.notificationsOpen) renderNotificationsPanel();
-    }, 15000);
+    document.addEventListener('visibilitychange', () => {
+      startLiveSync();
+      if (!document.hidden) runLiveSync();
+    });
 
     setInterval(sendHeartbeat, 30000);
+  }
+
+  function startLiveSync() {
+    if (state.liveSyncTimer) clearInterval(state.liveSyncTimer);
+    const ms = document.hidden ? 10000 : 2500;
+    state.liveSyncTimer = setInterval(runLiveSync, ms);
+  }
+
+  async function runLiveSync() {
+    const prevComments = state.comments.map((c) => ({
+      ...c,
+      replies: [...(c.replies || [])],
+    }));
+    const prevUnread = state.unreadCount;
+    const prevFingerprint = commentsFingerprint(prevComments);
+
+    await Promise.all([
+      loadComments(),
+      loadUsers(),
+      loadNotifications(),
+      loadPresence(),
+    ]);
+
+    const nextFingerprint = commentsFingerprint(state.comments);
+    const commentsChanged = prevFingerprint !== nextFingerprint;
+
+    if (commentsChanged) {
+      renderPins();
+      renderSidebar();
+    }
+
+    const me = ReviewAuth.getUser()?.id;
+    if (state.hasSyncedOnce && commentsChanged) {
+      const events = detectLiveEvents(prevComments, state.comments, me);
+      events.forEach(showLiveToast);
+    } else if (!state.hasSyncedOnce) {
+      state.hasSyncedOnce = true;
+    }
+
+    if (state.unreadCount !== prevUnread) {
+      renderNotificationBadge();
+      if (state.notificationsOpen) renderNotificationsPanel();
+    }
+
+    renderOnlineUsers();
+  }
+
+  function commentsFingerprint(comments) {
+    return comments
+      .map((c) => {
+        const replies = (c.replies || [])
+          .map((r) => `${r.id}:${r.createdAt}`)
+          .join(',');
+        return `${c.id}:${c.resolved}:${c.createdAt}:${replies}`;
+      })
+      .join('|');
+  }
+
+  function detectLiveEvents(prev, next, myId) {
+    const events = [];
+    const prevMap = new Map(prev.map((c) => [c.id, c]));
+
+    for (const comment of next) {
+      const old = prevMap.get(comment.id);
+      if (!old) {
+        if (comment.authorId !== myId) {
+          events.push({ type: 'new', comment });
+        }
+        continue;
+      }
+
+      const oldReplyIds = new Set((old.replies || []).map((r) => r.id));
+      for (const reply of comment.replies || []) {
+        if (!oldReplyIds.has(reply.id) && reply.authorId !== myId) {
+          events.push({ type: 'reply', comment, reply });
+        }
+      }
+    }
+
+    return events;
+  }
+
+  function showLiveToast(event) {
+    let container = document.getElementById('review-live-toasts');
+    if (!container) {
+      container = el('div', { class: 'review-live-toasts', id: 'review-live-toasts' });
+      document.body.appendChild(container);
+    }
+
+    const text = event.type === 'new'
+      ? `${event.comment.authorName} left a comment`
+      : `${event.reply.authorName} replied on a thread`;
+
+    const toast = el('div', {
+      class: 'review-live-toast',
+      onclick: () => {
+        toast.remove();
+        navigateToComment(event.comment);
+      },
+    }, [
+      el('span', { class: 'review-live-toast-dot' }),
+      el('div', { class: 'review-live-toast-body' }, [
+        el('strong', {}, [text]),
+        el('span', {}, [truncate(event.type === 'new' ? event.comment.text : event.reply.text, 72)]),
+      ]),
+    ]);
+
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('visible'));
+
+    setTimeout(() => {
+      toast.classList.remove('visible');
+      setTimeout(() => toast.remove(), 250);
+    }, 5000);
+  }
+
+  function truncate(str, len) {
+    const s = (str || '').trim();
+    return s.length > len ? `${s.slice(0, len)}…` : s;
+  }
+
+  function getCommentViewportCoords(comment) {
+    const docW = document.documentElement.scrollWidth;
+    const docH = document.documentElement.scrollHeight;
+    const pinDocX = (comment.x / 100) * docW;
+    const pinDocY = (comment.y / 100) * docH;
+    return {
+      clientX: pinDocX - window.scrollX,
+      clientY: pinDocY - window.scrollY,
+    };
+  }
+
+  function positionBubbleNearComment(bubble, comment) {
+    const { clientX, clientY } = getCommentViewportCoords(comment);
+    positionBubble(bubble, clientX + 18, clientY - 12);
   }
 
   function buildUI() {
@@ -648,7 +780,7 @@
         style: `left:${left}px;top:${top}px`,
         onclick: (e) => {
           e.stopPropagation();
-          openViewBubble(c, e.clientX, e.clientY);
+          openViewBubble(c);
         },
         'data-id': c.id,
       }, [
@@ -664,11 +796,12 @@
     });
   }
 
-  function openViewBubble(comment, clientX, clientY, showReplyForm = false) {
+  function openViewBubble(comment, showReplyForm = false) {
     closeBubble();
     loadUsers();
 
     const fresh = state.comments.find((c) => c.id === comment.id) || comment;
+    state.viewingCommentId = fresh.id;
     const replies = fresh.replies || [];
 
     const bubble = el('div', {
@@ -733,7 +866,7 @@
         id: 'review-reply-btn',
         onclick: (e) => {
           e.stopPropagation();
-          submitReply(fresh.id, replyTextarea, clientX, clientY);
+          submitReply(fresh.id, replyTextarea);
         },
       }, ['Post reply']),
     ]));
@@ -745,7 +878,7 @@
           class: 'review-reply-toggle',
           onclick: (e) => {
             e.stopPropagation();
-            openViewBubble(fresh, clientX, clientY, true);
+            openViewBubble(fresh, true);
           },
         }, ['↩ Reply']),
         el('button', {
@@ -772,14 +905,14 @@
     bubble.addEventListener('click', (e) => e.stopPropagation());
     bubble.addEventListener('mousedown', (e) => e.stopPropagation());
     document.body.appendChild(bubble);
-    positionBubble(bubble, clientX, clientY);
+    positionBubbleNearComment(bubble, fresh);
     setupMentions(replyTextarea, replyTagPreview);
     replyTextarea.addEventListener('input', () => updateTagPreview(replyTextarea, replyTagPreview));
     if (showReplyForm || replies.length) replyTextarea.focus();
     state.activeBubble = bubble;
   }
 
-  async function submitReply(parentId, textarea, clientX, clientY) {
+  async function submitReply(parentId, textarea) {
     const text = textarea.value.trim();
     if (!text) {
       alert('Please enter a reply before posting.');
@@ -813,7 +946,7 @@
       renderNotificationBadge();
 
       const updated = state.comments.find((c) => c.id === parentId);
-      if (updated) openViewBubble(updated, clientX, clientY, true);
+      if (updated) openViewBubble(updated, true);
     } catch (err) {
       alert(err.message || 'Failed to post reply');
       if (btn) {
@@ -895,22 +1028,43 @@
 
   function scrollToComment(comment) {
     state.highlightId = comment.id;
+    closeBubble();
+
     const docH = document.documentElement.scrollHeight;
-    const top = (comment.y / 100) * docH - window.innerHeight / 3;
-    window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    const pinTop = (comment.y / 100) * docH;
+    const targetScroll = Math.max(0, pinTop - window.innerHeight / 3);
+    window.scrollTo({ top: targetScroll, behavior: 'smooth' });
     renderPins();
     renderSidebar();
 
-    setTimeout(() => {
-      const pin = document.querySelector(`.review-pin[data-id="${comment.id}"]`);
-      if (pin) pin.click();
-    }, 400);
+    const openAtPin = () => {
+      openViewBubble(comment);
+    };
+
+    if (Math.abs(window.scrollY - targetScroll) < 4) {
+      openAtPin();
+    } else {
+      let opened = false;
+      const onScroll = () => {
+        if (opened) return;
+        if (Math.abs(window.scrollY - targetScroll) < 24) {
+          opened = true;
+          window.removeEventListener('scroll', onScroll);
+          openAtPin();
+        }
+      };
+      window.addEventListener('scroll', onScroll, { passive: true });
+      setTimeout(() => {
+        window.removeEventListener('scroll', onScroll);
+        if (!opened) openAtPin();
+      }, 700);
+    }
 
     setTimeout(() => {
       state.highlightId = null;
       renderPins();
       renderSidebar();
-    }, 3000);
+    }, 3500);
   }
 
   function handleDeepLink() {
@@ -929,6 +1083,7 @@
     if (bubble) bubble.remove();
     document.querySelectorAll('.review-mention-dropdown').forEach((d) => d.remove());
     state.activeBubble = null;
+    state.viewingCommentId = null;
   }
 
   function positionBubble(bubble, clientX, clientY) {
