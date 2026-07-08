@@ -6,6 +6,10 @@
     sidebarOpen: true,
     comments: [],
     users: [],
+    notifications: [],
+    unreadCount: 0,
+    onlineUsers: [],
+    notificationsOpen: false,
     activeBubble: null,
     pendingPin: null,
     highlightId: null,
@@ -29,15 +33,28 @@
     buildUI();
     await loadUsers();
     await loadComments();
+    await loadNotifications();
+    await loadPresence();
+    sendHeartbeat();
     renderPins();
     renderSidebar();
+    renderOnlineUsers();
+    renderNotificationBadge();
     handleDeepLink();
+
     setInterval(async () => {
       await loadComments();
       await loadUsers();
+      await loadNotifications();
+      await loadPresence();
       renderPins();
       renderSidebar();
+      renderOnlineUsers();
+      renderNotificationBadge();
+      if (state.notificationsOpen) renderNotificationsPanel();
     }, 15000);
+
+    setInterval(sendHeartbeat, 30000);
   }
 
   function buildUI() {
@@ -51,6 +68,7 @@
           onclick: toggleSidebar,
         }, ['☰ Comments']),
         el('span', { class: 'review-logo' }, ['Review', el('span', {}, ['.'])]),
+        el('div', { class: 'review-online-wrap', id: 'review-online-wrap' }),
       ]),
       el('div', { class: 'review-toolbar-right' }, [
         el('button', {
@@ -58,6 +76,15 @@
           id: 'review-toggle-mode',
           onclick: toggleCommentMode,
         }, ['＋ Add comment']),
+        el('div', { class: 'review-notifications-wrap', id: 'review-notifications-wrap' }, [
+          el('button', {
+            type: 'button',
+            class: 'review-btn review-notifications-btn',
+            id: 'review-notifications-btn',
+            onclick: toggleNotifications,
+          }, ['🔔', el('span', { class: 'review-notifications-badge', id: 'review-notifications-badge' }, [''])]),
+          el('div', { class: 'review-notifications-panel', id: 'review-notifications-panel' }),
+        ]),
         el('div', { class: 'review-user' }, [
           el('div', { class: 'review-avatar' }, [initials(user.name)]),
           el('span', {}, [user.name]),
@@ -84,9 +111,175 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         closeBubble();
+        closeNotifications();
         if (state.commentMode) toggleCommentMode();
       }
     });
+
+    document.addEventListener('click', (e) => {
+      const wrap = document.getElementById('review-notifications-wrap');
+      if (wrap && !wrap.contains(e.target)) closeNotifications();
+    });
+  }
+
+  function toggleNotifications() {
+    state.notificationsOpen = !state.notificationsOpen;
+    const panel = document.getElementById('review-notifications-panel');
+    if (state.notificationsOpen) {
+      panel.classList.add('open');
+      renderNotificationsPanel();
+    } else {
+      panel.classList.remove('open');
+    }
+  }
+
+  function closeNotifications() {
+    state.notificationsOpen = false;
+    const panel = document.getElementById('review-notifications-panel');
+    if (panel) panel.classList.remove('open');
+  }
+
+  async function sendHeartbeat() {
+    try {
+      await fetch('/api/presence', {
+        method: 'POST',
+        headers: ReviewAuth.headers(),
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function loadPresence() {
+    try {
+      const res = await fetch('/api/presence', { headers: ReviewAuth.headers() });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.onlineUsers = data.online || [];
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function loadNotifications() {
+    try {
+      const res = await fetch('/api/notifications', { headers: ReviewAuth.headers() });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.notifications = data.notifications || [];
+      state.unreadCount = data.unread || 0;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function renderOnlineUsers() {
+    const wrap = document.getElementById('review-online-wrap');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+
+    if (!state.onlineUsers.length) {
+      wrap.appendChild(el('span', { class: 'review-online-empty' }, ['No one else online']));
+      return;
+    }
+
+    const label = el('span', { class: 'review-online-label' }, ['Online:']);
+    wrap.appendChild(label);
+
+    state.onlineUsers.forEach((u) => {
+      wrap.appendChild(el('div', { class: 'review-online-user', title: u.email }, [
+        el('span', { class: 'review-online-dot' }),
+        el('span', {}, [u.name]),
+      ]));
+    });
+  }
+
+  function renderNotificationBadge() {
+    const badge = document.getElementById('review-notifications-badge');
+    if (!badge) return;
+    if (state.unreadCount > 0) {
+      badge.textContent = String(state.unreadCount > 9 ? '9+' : state.unreadCount);
+      badge.style.display = 'inline-flex';
+    } else {
+      badge.textContent = '';
+      badge.style.display = 'none';
+    }
+  }
+
+  function notificationLabel(n) {
+    if (n.type === 'tag') return `${n.fromName} tagged you`;
+    if (n.type === 'reply') return `${n.fromName} replied to your comment`;
+    if (n.type === 'reply_tagged') return `${n.fromName} replied on a thread you're in`;
+    return `${n.fromName} notified you`;
+  }
+
+  function renderNotificationsPanel() {
+    const panel = document.getElementById('review-notifications-panel');
+    if (!panel) return;
+    panel.innerHTML = '';
+
+    panel.appendChild(el('div', { class: 'review-notifications-header' }, [
+      el('strong', {}, ['Notifications']),
+      state.unreadCount
+        ? el('button', {
+          type: 'button',
+          class: 'review-notifications-mark-all',
+          onclick: markAllNotificationsRead,
+        }, ['Mark all read'])
+        : null,
+    ].filter(Boolean)));
+
+    if (!state.notifications.length) {
+      panel.appendChild(el('div', { class: 'review-notifications-empty' }, ['No notifications yet']));
+      return;
+    }
+
+    const list = el('div', { class: 'review-notifications-list' });
+    state.notifications.slice(0, 30).forEach((n) => {
+      list.appendChild(el('button', {
+        type: 'button',
+        class: `review-notification-item${n.read ? '' : ' unread'}`,
+        onclick: () => openNotification(n),
+      }, [
+        el('span', { class: 'review-notification-title' }, [notificationLabel(n)]),
+        el('span', { class: 'review-notification-text' }, [n.message]),
+        el('span', { class: 'review-notification-time' }, [formatTime(n.createdAt)]),
+      ]));
+    });
+    panel.appendChild(list);
+  }
+
+  async function markAllNotificationsRead() {
+    await fetch('/api/notifications', {
+      method: 'PATCH',
+      headers: ReviewAuth.headers(),
+      body: JSON.stringify({ markAllRead: true }),
+    });
+    await loadNotifications();
+    renderNotificationBadge();
+    renderNotificationsPanel();
+  }
+
+  async function openNotification(n) {
+    await fetch('/api/notifications', {
+      method: 'PATCH',
+      headers: ReviewAuth.headers(),
+      body: JSON.stringify({ id: n.id }),
+    });
+    closeNotifications();
+    await loadNotifications();
+    renderNotificationBadge();
+
+    const comment = state.comments.find((c) => c.id === n.commentId);
+    if (comment) {
+      if (samePage(comment.page, page)) {
+        scrollToComment(comment);
+      } else {
+        window.location.href = `${comment.page}?comment=${comment.id}`;
+      }
+    } else {
+      window.location.href = `${n.page}?comment=${n.commentId}`;
+    }
   }
 
   function toggleSidebar() {
@@ -222,8 +415,10 @@
       toggleCommentMode();
       await loadComments();
       await loadUsers();
+      await loadNotifications();
       renderPins();
       renderSidebar();
+      renderNotificationBadge();
     } catch (err) {
       alert(err.message || 'Failed to post comment');
       if (btn) {
@@ -527,8 +722,10 @@
       }
 
       await loadComments();
+      await loadNotifications();
       renderPins();
       renderSidebar();
+      renderNotificationBadge();
 
       const updated = state.comments.find((c) => c.id === parentId);
       if (updated) openViewBubble(updated, clientX, clientY, true);

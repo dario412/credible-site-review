@@ -1,7 +1,8 @@
 import { put, get } from '@vercel/blob';
+import { cleanupTestData, isTestEmail } from './cleanup.js';
 
 const BLOB_PATH = 'review-data/store.json';
-const EMPTY = { users: [], comments: [] };
+const EMPTY = { users: [], comments: [], notifications: [], presence: {} };
 
 function isVercel() {
   return Boolean(process.env.VERCEL);
@@ -30,6 +31,8 @@ function normalizeStore(raw) {
   return {
     users: Array.isArray(raw?.users) ? raw.users : [],
     comments: Array.isArray(raw?.comments) ? raw.comments : [],
+    notifications: Array.isArray(raw?.notifications) ? raw.notifications : [],
+    presence: raw?.presence && typeof raw.presence === 'object' ? raw.presence : {},
   };
 }
 
@@ -85,26 +88,39 @@ async function writeBlob(data) {
 }
 
 export async function getStore() {
+  let store;
   if (isVercel() || hasBlobStorage()) {
-    return (await readBlob()) || structuredClone(EMPTY);
-  }
+    store = (await readBlob()) || structuredClone(EMPTY);
+  } else {
+    const { readFile, writeFile, mkdir } = await import('fs/promises');
+    const { existsSync } = await import('fs');
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const localPath = join(dirname(fileURLToPath(import.meta.url)), '../../data/store.json');
 
-  const { readFile, writeFile, mkdir } = await import('fs/promises');
-  const { existsSync } = await import('fs');
-  const { join, dirname } = await import('path');
-  const { fileURLToPath } = await import('url');
-  const localPath = join(dirname(fileURLToPath(import.meta.url)), '../../data/store.json');
-
-  try {
-    if (!existsSync(localPath)) {
-      await mkdir(dirname(localPath), { recursive: true });
-      await writeFile(localPath, JSON.stringify(EMPTY, null, 2));
-      return structuredClone(EMPTY);
+    try {
+      if (!existsSync(localPath)) {
+        await mkdir(dirname(localPath), { recursive: true });
+        await writeFile(localPath, JSON.stringify(EMPTY, null, 2));
+        store = structuredClone(EMPTY);
+      } else {
+        store = normalizeStore(JSON.parse(await readFile(localPath, 'utf-8')));
+      }
+    } catch {
+      store = structuredClone(EMPTY);
     }
-    return normalizeStore(JSON.parse(await readFile(localPath, 'utf-8')));
-  } catch {
-    return structuredClone(EMPTY);
   }
+
+  const hasTestData =
+    store.users.some((u) => isTestEmail(u.email)) ||
+    store.comments.some((c) => isTestEmail(c.authorEmail));
+
+  if (hasTestData) {
+    cleanupTestData(store);
+    await saveStore(store);
+  }
+
+  return store;
 }
 
 export async function saveStore(data) {
@@ -122,6 +138,4 @@ export async function saveStore(data) {
   return payload;
 }
 
-export function newId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-}
+export { newId } from './ids.js';

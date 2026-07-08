@@ -32,6 +32,13 @@ const API_ROUTES = {
   'OPTIONS /api/comments': () => import('../api/comments.js'),
   'GET /api/users': () => import('../api/users.js'),
   'OPTIONS /api/users': () => import('../api/users.js'),
+  'GET /api/notifications': () => import('../api/notifications.js'),
+  'PATCH /api/notifications': () => import('../api/notifications.js'),
+  'OPTIONS /api/notifications': () => import('../api/notifications.js'),
+  'GET /api/presence': () => import('../api/presence.js'),
+  'POST /api/presence': () => import('../api/presence.js'),
+  'OPTIONS /api/presence': () => import('../api/presence.js'),
+  'POST /api/admin/cleanup': () => import('../api/admin/cleanup.js'),
 };
 
 async function handleApi(req, res) {

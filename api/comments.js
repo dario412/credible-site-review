@@ -1,5 +1,6 @@
 import { getStore, saveStore, newId } from './lib/store.js';
 import { getUser } from './lib/auth.js';
+import { notifyCommentTagged, notifyReply } from './lib/notifications.js';
 
 export async function OPTIONS() {
   return cors(null, 204);
@@ -46,6 +47,9 @@ export async function POST(request) {
     };
 
     parent.replies.push(reply);
+
+    notifyReply(store, parent, reply, user);
+
     await saveStore(store);
 
     const notifyTags = [...tags];
@@ -54,7 +58,7 @@ export async function POST(request) {
     }
 
     if (notifyTags.length > 0) {
-      await notifyTagged(parent, reply, user, notifyTags, request, true);
+      await notifyEmail(parent, reply, user, notifyTags, request, true);
     }
 
     return cors(JSON.stringify({ reply, comment: parent }), 201);
@@ -90,10 +94,13 @@ export async function POST(request) {
   };
 
   store.comments.push(comment);
+
+  notifyCommentTagged(store, comment, user, comment.tags);
+
   await saveStore(store);
 
   if (tags.length > 0) {
-    await notifyTagged(comment, comment, user, tags, request, false);
+    await notifyEmail(comment, comment, user, tags, request, false);
   }
 
   return cors(JSON.stringify({ comment }), 201);
@@ -140,7 +147,7 @@ export async function DELETE(request) {
   return cors(JSON.stringify({ ok: true }), 200);
 }
 
-async function notifyTagged(comment, message, author, tags, request, isReply) {
+async function notifyEmail(comment, message, author, tags, request, isReply) {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
   const siteUrl = process.env.SITE_URL || `${new URL(request.url).origin}`;
