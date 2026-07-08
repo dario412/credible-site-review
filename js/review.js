@@ -32,7 +32,12 @@
     renderPins();
     renderSidebar();
     handleDeepLink();
-    setInterval(loadComments, 15000);
+    setInterval(async () => {
+      await loadComments();
+      await loadUsers();
+      renderPins();
+      renderSidebar();
+    }, 15000);
   }
 
   function buildUI() {
@@ -216,6 +221,7 @@
       closeBubble();
       toggleCommentMode();
       await loadComments();
+      await loadUsers();
       renderPins();
       renderSidebar();
     } catch (err) {
@@ -229,17 +235,11 @@
 
   function parseTags(text) {
     const tags = [];
-    const re = /@([^\s@]+(?:\s+[^\s@]+)*?)(?=\s|$|[.,!?])/g;
-    let match;
-    while ((match = re.exec(text)) !== null) {
-      const query = match[1].trim().toLowerCase();
-      const user = state.users.find(
-        (u) =>
-          u.name.toLowerCase() === query ||
-          u.name.toLowerCase().startsWith(query) ||
-          u.email.toLowerCase().startsWith(query)
-      );
-      if (user && !tags.find((t) => t.email === user.email)) {
+    const sorted = [...state.users].sort((a, b) => b.name.length - a.name.length);
+    for (const user of sorted) {
+      const escaped = user.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`@${escaped}(?:\\s|$|[.,!?])`, 'i');
+      if (pattern.test(text) && !tags.find((t) => t.email === user.email)) {
         tags.push({ email: user.email, name: user.name });
       }
     }
