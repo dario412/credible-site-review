@@ -12,7 +12,8 @@
     "deploy": "vercel --prod"
   },
   "dependencies": {
-    "@vercel/blob": "^1.1.1",
+    "@vercel/blob": "^2.6.1",
+    "@vercel/oidc": "^3.8.0",
     "jose": "^5.9.6",
     "resend": "^4.0.1"
   },

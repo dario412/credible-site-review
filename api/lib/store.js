@@ -1,4 +1,4 @@
-import { put, head } from '@vercel/blob';
+import { put, head, get } from '@vercel/blob';
 
 const BLOB_PATH = 'review-data/store.json';
 const EMPTY = { users: [], comments: [] };
@@ -7,11 +7,15 @@ function isVercel() {
   return Boolean(process.env.VERCEL);
 }
 
+function blobOpts() {
+  const opts = {};
+  if (process.env.BLOB_STORE_ID) opts.storeId = process.env.BLOB_STORE_ID;
+  if (process.env.BLOB_READ_WRITE_TOKEN) opts.token = process.env.BLOB_READ_WRITE_TOKEN;
+  return opts;
+}
+
 function hasBlobStorage() {
-  return Boolean(
-    process.env.BLOB_READ_WRITE_TOKEN ||
-    process.env.BLOB_STORE_ID
-  );
+  return Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
 }
 
 function requireBlobStorage() {
@@ -24,11 +28,12 @@ function requireBlobStorage() {
 
 async function readBlob() {
   requireBlobStorage();
+  const opts = blobOpts();
   try {
-    const meta = await head(BLOB_PATH);
-    const res = await fetch(meta.url);
-    if (!res.ok) return structuredClone(EMPTY);
-    return await res.json();
+    const meta = await head(BLOB_PATH, opts);
+    const result = await get(meta.url, opts);
+    const text = await result.text();
+    return JSON.parse(text);
   } catch {
     return structuredClone(EMPTY);
   }
@@ -36,19 +41,18 @@ async function readBlob() {
 
 async function writeBlob(data) {
   requireBlobStorage();
+  const opts = blobOpts();
   await put(BLOB_PATH, JSON.stringify(data), {
-    access: 'public',
+    access: 'private',
     contentType: 'application/json',
     addRandomSuffix: false,
+    allowOverwrite: true,
+    ...opts,
   });
 }
 
 export async function getStore() {
-  if (isVercel()) {
-    return (await readBlob()) || structuredClone(EMPTY);
-  }
-
-  if (hasBlobStorage()) {
+  if (isVercel() || hasBlobStorage()) {
     return (await readBlob()) || structuredClone(EMPTY);
   }
 
